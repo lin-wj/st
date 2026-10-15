@@ -9,6 +9,8 @@
     "directory": "./public"
   },
   "kv_namespaces": [
-    { "binding": "QUESTION_BANK" }
+    { "binding": "QUESTION_BANK",
+      "id": "9612a81cd67d4896b5ae6e3f19061b8d"
+}
   ]
 }
