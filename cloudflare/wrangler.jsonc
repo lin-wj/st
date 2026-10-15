@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "kssou-photosearch",
+  "name": "st",
   "main": "worker.mjs",
   "compatibility_date": "2026-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,9 +9,6 @@
     "directory": "./public"
   },
   "kv_namespaces": [
-    {
-      "binding": "QUESTION_BANK",
-      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-    }
+    { "binding": "QUESTION_BANK" }
   ]
 }
