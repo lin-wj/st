@@ -69,7 +69,13 @@ small { color: #889; }
 
   <div class="card">
     <h2>③ 题库导入（AI 导题位）</h2>
-    <textarea id="bankText" placeholder="粘贴题目，空行分隔。格式：&#10;题目文本&#10;答案: xx&#10;解析: xx"></textarea>
+    <div class="row">
+      <button class="ghost" onclick="document.getElementById('xlsx').click()">📊 上传 Excel 题库</button>
+      <input type="file" id="xlsx" accept=".xlsx,.xls" hidden>
+    </div>
+    <div id="xlsxMsg" class="banner" style="display:none; margin-top:8px;"></div>
+    <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+    <textarea id="bankText" placeholder="或粘贴题目，空行分隔。格式：&#10;题目文本&#10;答案: xx&#10;解析: xx"></textarea>
     <div class="row">
       <input id="bankName" placeholder="题库名" style="border:1px solid #d5dcef; border-radius:9px; padding:8px; min-width:110px;">
       <button class="ghost" onclick="importBank()">导入题库</button>
@@ -78,6 +84,7 @@ small { color: #889; }
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; };
@@ -246,6 +253,51 @@ async function importBank() {
   msg.textContent = r.ok ? `✅ 已导入「${r.name}」共 ${r.count} 题` : "❌ " + r.error;
   if (r.ok) { $("bankText").value = ""; $("bankName").value = ""; refreshBanks(); }
 }
+
+/* ---------- Excel 题库导入 ---------- */
+const COL_MAP = {
+  题目: "question", 题干: "question", question: "question", q: "question",
+  选项: "options", 备选: "options", options: "options",
+  答案: "answer", 正确答案: "answer", answer: "answer",
+  解析: "explanation", 详解: "explanation", 分析: "explanation", explanation: "explanation",
+};
+$("xlsx").onchange = async () => {
+  const f = $("xlsx").files[0];
+  if (!f) return;
+  const msg = $("xlsxMsg");
+  msg.style.display = "block"; msg.textContent = "解析中…";
+  try {
+    const wb = XLSX.read(await f.arrayBuffer());
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+    if (!rows.length) throw new Error("Excel 第一个工作表没有数据行");
+    const headers = Object.keys(rows[0]);
+    const map = {};
+    for (const h of headers) {
+      const key = COL_MAP[h.trim().toLowerCase()] || COL_MAP[h.trim()];
+      if (key) map[h] = key;
+    }
+    if (!Object.values(map).includes("question")) {
+      // 没识别到表头就按列顺序兜底：第1列=题目
+      map[headers[0]] = "question";
+    }
+    const items = rows.map(r => ({
+      question: String(r[Object.keys(r).find(k => map[k] === "question")] || "").trim(),
+      options: map.options && r[map.options] ? String(r[map.options]).trim() : "",
+      answer: map.answer && r[map.answer] ? String(r[map.answer]).trim() : "",
+      explanation: map.explanation && r[map.explanation] ? String(r[map.explanation]).trim() : "",
+    })).filter(x => x.question);
+    if (!items.length) throw new Error("没解析出任何题目");
+    const name = ($("bankName").value.trim() || f.name.replace(/\.xlsx?$/i, ""));
+    const r = await (await fetch("/api/bank", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, items })
+    })).json();
+    msg.textContent = r.ok
+      ? `✅ 已导入「${r.name}」共 ${r.count} 题（识别列：${Object.entries(map).map(([k,v]) => k + "→" + v).join("，")}）`
+      : "❌ " + r.error;
+    if (r.ok) refreshBanks();
+  } catch (e) { msg.textContent = "❌ " + e.message; }
+};
 
 function refreshBanks() {
   fetch("/api/banks").then(x => x.json()).then(d => {
