@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>快搜搜题（Cloudflare 版）</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; background: #f5f7fb; color: #1a2233; }
+.container { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 20px; margin: 12px 0 4px; }
+.sub { color: #667; font-size: 13px; margin-bottom: 16px; }
+.card { background: #fff; border-radius: 14px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(20,40,80,.08); }
+.card h2 { font-size: 15px; margin: 0 0 10px; color: #334; }
+.drop { border: 2px dashed #b8c4e0; border-radius: 12px; padding: 22px; text-align: center; color: #5a6b8c; cursor: pointer; }
+.drop:hover { border-color: #4f6ef7; }
+.drop img { max-width: 100%; border-radius: 8px; display: block; margin: 8px auto; }
+button { background: #4f6ef7; border: 0; color: #fff; padding: 9px 16px; border-radius: 9px; font-size: 13px; cursor: pointer; }
+button:disabled { opacity: .5; }
+button.ghost { background: #eef1fb; color: #4f6ef7; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+pre { background: #0f1524; color: #d7e0ff; padding: 12px; border-radius: 10px; font-size: 13px; white-space: pre-wrap; min-height: 44px; margin-top: 10px; }
+.result { border-left: 4px solid #4f6ef7; padding: 10px 12px; margin-top: 10px; background: #f8f9ff; border-radius: 8px; font-size: 14px; }
+.result .q { font-weight: 600; }
+.result .a { color: #127a3d; margin-top: 4px; }
+.result .e { color: #556; margin-top: 4px; font-size: 13px; }
+.result .meta { color: #889; font-size: 12px; margin-top: 6px; }
+.tag { display: inline-block; background: #eef1fb; color: #4f6ef7; font-size: 11px; padding: 2px 8px; border-radius: 20px; margin-left: 6px; }
+.banner { font-size: 12px; color: #68530a; background: #fdf6e3; padding: 8px 10px; border-radius: 8px; margin-top: 8px; }
+textarea { width: 100%; border: 1px solid #d5dcef; border-radius: 10px; padding: 10px; font-size: 13px; min-height: 80px; }
+.err { color: #c33; font-size: 13px; margin-top: 8px; }
+small { color: #889; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📷 快搜搜题 · Cloudflare 版</h1>
+  <div class="sub">拍照 → Workers AI OCR → 本地题库检索 / AI 解题（全部走 Cloudflare 免费额度）</div>
+
+  <div class="card">
+    <h2>① 拍照 / 传图</h2>
+    <div class="drop" id="drop" onclick="document.getElementById('file').click()">
+      <div>点我选图，或直接用 <b>摄像头拍照</b>（移动端）</div>
+      <input type="file" id="file" accept="image/*" capture="environment" hidden>
+      <img id="preview" hidden>
+    </div>
+    <div class="row">
+      <button id="ocrBtn" disabled onclick="runOcr()">识别文字（Workers AI OCR）</button>
+      <small>识别模式：<select id="ocrModel"><option value="hanzi">中文(汉字)</option><option value="latin">西文</option></select></small>
+    </div>
+    <pre id="ocrText" hidden></pre>
+  </div>
+
+  <div class="card">
+    <h2>② 搜题</h2>
+    <textarea id="query" placeholder="粘贴 / 手动输入题目，或用上方 OCR 结果自动填入"></textarea>
+    <div class="row">
+      <button class="ghost" onclick="runSearch()">搜本地题库</button>
+      <button class="ghost" onclick="runAsk()">🤖 AI 解题（Llama 3.1 · CF AI）</button>
+      <button class="ghost" onclick="refreshBanks()">刷新题库</button>
+    </div>
+    <div id="results"></div>
+    <div class="banner" id="bankInfo"></div>
+  </div>
+
+  <div class="card">
+    <h2>③ 题库导入（AI 导题位）</h2>
+    <textarea id="bankText" placeholder="粘贴题目，空行分隔。格式：&#10;题目文本&#10;答案: xx&#10;解析: xx"></textarea>
+    <div class="row">
+      <input id="bankName" placeholder="题库名" style="border:1px solid #d5dcef; border-radius:9px; padding:8px; min-width:110px;">
+      <button class="ghost" onclick="importBank()">导入题库</button>
+    </div>
+    <div class="err" id="bankMsg"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; };
+
+$("file").onchange = () => {
+  const f = $("file").files[0];
+  if (!f) return;
+  $("preview").src = URL.createObjectURL(f);
+  $("preview").hidden = false;
+  $("ocrBtn").disabled = false;
+};
+
+async function runOcr() {
+  const f = $("file").files[0];
+  $("ocrBtn").disabled = true;
+  try {
+    const r = await (await fetch(`/api/ocr?model=${$("ocrModel").value}`, {
+      method: "POST", body: f, headers: { "Content-Type": "image/png" }
+    })).json();
+    if (!r.ok) throw new Error(r.error);
+    $("ocrText").hidden = false;
+    $("ocrText").textContent = r.text || "(未识别到文字)";
+    $("query").value = r.text;
+  } catch (e) { alert(e.message || e); }
+  $("ocrBtn").disabled = false;
+}
+
+async function runSearch() {
+  const r = await (await fetch("/api/search", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: $("query").value.trim() })
+  })).json();
+  const box = $("results");
+  if (!r.ok) { box.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
+  if (!r.results.length) { box.innerHTML = "<div class='err'>本地题库没搜到相似题。可先导入题库（第③步），或用 AI 解题。</div>"; return; }
+  box.innerHTML = r.results.map(x => `
+    <div class="result">
+      <div class="q">${esc(x.question)} <span class="tag">匹配 ${(x.score*100).toFixed(0)}%</span></div>
+      ${x.options ? `<div>${esc(x.options)}</div>` : ""}
+      ${x.answer ? `<div class="a">答案：${esc(x.answer)}</div>` : ""}
+      ${x.explanation ? `<div class="e">${esc(x.explanation)}</div>` : ""}
+      <div class="meta">题库：${esc(x.bank)}</div>
+    </div>`).join("");
+}
+
+async function runAsk() {
+  const q = $("query").value.trim();
+  if (!q) return;
+  const msg = document.createElement("div");
+  msg.className = "err"; msg.textContent = "AI 正在解题…";
+  $("results").appendChild(msg);
+  const r = await (await fetch("/api/ask", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: q })
+  })).json();
+  msg.remove();
+  const box = $("results");
+  if (!r.ok) { box.innerHTML += `<div class="err">AI：${esc(r.error)}</div>`; return; }
+  box.innerHTML += `<div class="result"><div class="q">🤖 ${esc(r.model)}</div><div class="a">${esc(r.answer).replace(/\n/g, "<br>")}</div></div>`;
+}
+
+async function importBank() {
+  const msg = $("bankMsg"); msg.textContent = "";
+  const r = await (await fetch("/api/bank", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("bankName").value.trim(), text: $("bankText").value })
+  })).json();
+  msg.textContent = r.ok ? `✅ 已导入「${r.name}」共 ${r.count} 题` : "❌ " + r.error;
+  if (r.ok) { $("bankText").value = ""; $("bankName").value = ""; refreshBanks(); }
+}
+
+function refreshBanks() {
+  fetch("/api/banks").then(x => x.json()).then(d => {
+    $("bankInfo").textContent = "当前题库：" + (d.banks.map(b => `${b.name}(${b.count})`).join("、") || "无");
+  });
+}
+refreshBanks();
+</script>
+</body>
+</html>

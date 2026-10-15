@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+node_modules/
+local/uploads/
+local/data/*.json
+!local/data/示例题库.json
+wrangler/
+.dev/
