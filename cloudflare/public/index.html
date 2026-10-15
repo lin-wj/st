@@ -39,16 +39,19 @@ small { color: #889; }
   <div class="sub">拍照 → Workers AI OCR → 本地题库检索 / AI 解题（全部走 Cloudflare 免费额度）</div>
 
   <div class="card">
-    <h2>① 拍照 / 传图</h2>
+    <h2>① 拍照 / 实时识别</h2>
+    <video id="video" playsinline autoplay muted hidden style="width:100%; border-radius:10px; display:block; margin:8px auto; max-height:300px;"></video>
+    <div class="row">
+      <button class="ghost" id="liveBtn" onclick="toggleLive()">🔴 开启实时识别</button>
+      <button id="ocrBtn" disabled onclick="runOcr()">识别一帧（Workers AI OCR）</button>
+      <small>模型：<select id="ocrModel" onchange="if(live) restartLive()"><option value="hanzi">中文(汉字)</option><option value="latin">西文</option></select></small>
+    </div>
     <div class="drop" id="drop" onclick="document.getElementById('file').click()">
-      <div>点我选图，或直接用 <b>摄像头拍照</b>（移动端）</div>
+      <div>或点我 <b>手动选图 / 拍照</b>（移动端会调起相机）</div>
       <input type="file" id="file" accept="image/*" capture="environment" hidden>
       <img id="preview" hidden>
     </div>
-    <div class="row">
-      <button id="ocrBtn" disabled onclick="runOcr()">识别文字（Workers AI OCR）</button>
-      <small>识别模式：<select id="ocrModel"><option value="hanzi">中文(汉字)</option><option value="latin">西文</option></select></small>
-    </div>
+    <pre id="liveText" hidden></pre>
     <pre id="ocrText" hidden></pre>
   </div>
 
@@ -87,13 +90,107 @@ $("file").onchange = () => {
   $("ocrBtn").disabled = false;
 };
 
+/* ---------- 实时识别：摄像头流 + 定时抓帧 OCR ---------- */
+let live = false, liveTimer = null, liveBusy = false, lastLiveText = "";
+
+async function toggleLive() {
+  if (live) return stopLive();
+  const video = $("video");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = stream;
+    video.hidden = false;
+    await video.play();
+  } catch (e) { alert("无法开启相机：" + e.message); return; }
+  live = true;
+  $("liveBtn").textContent = "⏹ 停止实时识别";
+  $("liveText").hidden = false;
+  $("results").insertAdjacentHTML("afterbegin", "<div class='banner'>实时模式：识别到文字会自动搜索题库（不耗 AI 额度）；确认题目后手动点 AI 解题。</div>");
+  liveLoop();
+}
+
+async function liveLoop() {
+  if (!live) return;
+  liveTimer = setTimeout(async () => {
+    if (!live) return;
+    if (!liveBusy) {
+      liveBusy = true;
+      try {
+        const v = $("video");
+        if (v.videoWidth) {
+          const canvas = document.createElement("canvas");
+          const w = Math.min(720, v.videoWidth);
+          const h = Math.round(v.videoHeight * (w / v.videoWidth));
+          canvas.width = w; canvas.height = h;
+          canvas.getContext("2d").drawImage(v, 0, 0, w, h);
+          const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.8));
+          const resp = await fetch(`/api/ocr?model=${$("ocrModel").value}`, { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+          const r2 = await resp.json();
+          if (r2.ok && r2.text.trim() && r2.text !== lastLiveText) {
+            lastLiveText = r2.text;
+            $("liveText").textContent = "👀 识别中…";
+            $("liveText").textContent = "📖 " + r2.text;
+            await autoSearch(r2.text);
+          }
+        }
+      } catch (_) {}
+      liveBusy = false;
+    }
+    liveLoop();
+  }, 2500); // 每 2.5s 一帧
+}
+
+function stopLive() {
+  live = false;
+  clearTimeout(liveTimer);
+  const video = $("video");
+  video.srcObject?.getTracks().forEach(t => t.stop());
+  video.hidden = true; video.srcObject = null;
+  $("liveBtn").textContent = "🔴 开启实时识别";
+}
+
+/* 实时模式下的自动题库检索（本地计算，免费） */
+let autoTimer = null;
+async function autoSearch(text) {
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(async () => {
+    $("query").value = text;
+    const r = await (await fetch("/api/search", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: text })
+    })).json();
+    const box = $("results");
+    if (r.ok && r.results.length) {
+      box.innerHTML = '<div class="banner" style="color:#127a3d;background:#eefaf1">✅ 实时匹配到：</div>' +
+        r.results.slice(0, 1).map(x => `
+        <div class="result">
+          <div class="q">${esc(x.question)} <span class="tag">匹配 ${(x.score*100).toFixed(0)}%</span></div>
+          ${x.options ? `<div>${esc(x.options)}</div>` : ""}
+          ${x.answer ? `<div class="a">答案：${esc(x.answer)}</div>` : ""}
+          ${x.explanation ? `<div class="e">${esc(x.explanation)}</div>` : ""}
+          <div class="meta">题库：${esc(x.bank)}</div>
+        </div>`).join("");
+    } else if (r.ok) {
+      box.innerHTML = '<div class="banner">没有匹配到本地题库。把题目稳住别动，确认文字无误后点下方「AI 解题」。</div>';
+    }
+  }, 800);
+}
+
 async function runOcr() {
-  const f = $("file").files[0];
+  const src = $("liveBtn").textContent.includes("开启") ? $("file").files[0] : null;
+  let body, headers;
+  if (src) {
+    body = src; headers = { "Content-Type": "image/png" };
+  } else {
+    const v = $("video");
+    const c = document.createElement("canvas");
+    c.width = Math.min(720, v.videoWidth); c.height = Math.round(v.videoHeight * (c.width / v.videoWidth));
+    c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.85));
+    body = blob; headers = { "Content-Type": "image/jpeg" };
+  }
   $("ocrBtn").disabled = true;
   try {
-    const r = await (await fetch(`/api/ocr?model=${$("ocrModel").value}`, {
-      method: "POST", body: f, headers: { "Content-Type": "image/png" }
-    })).json();
+    const r = await (await fetch(`/api/ocr?model=${$("ocrModel").value}`, { method: "POST", body, headers })).json();
     if (!r.ok) throw new Error(r.error);
     $("ocrText").hidden = false;
     $("ocrText").textContent = r.text || "(未识别到文字)";
