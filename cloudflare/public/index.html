@@ -140,6 +140,11 @@ async function liveLoop() {
   }, 2500); // 每 2.5s 一帧
 }
 
+function restartLive() {
+  clearTimeout(liveTimer);
+  liveLoop();
+}
+
 function stopLive() {
   live = false;
   clearTimeout(liveTimer);
